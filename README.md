@@ -6,11 +6,15 @@ The client currently targets Clash, Clash Premium, Clash Meta, Mihomo,
 clash-rs, and sing-box's Clash API compatibility layer. Endpoint capabilities
 are detected at runtime because support differs between cores.
 
-## Status
+## Installation
 
-This package is under development and has not been published to PyPI yet.
+```bash
+python -m pip install clash-controller-api
+```
+
 The distribution name is `clash-controller-api`; the import name is
-`clash_controller_api`.
+`clash_controller_api`. The caller owns the `aiohttp.ClientSession` passed to
+`ClashAPI` and remains responsible for closing it.
 
 ## Development
 
@@ -20,6 +24,3 @@ Python 3.11 or newer is required.
 python -m pip install -e ".[test]"
 pytest
 ```
-
-The caller owns the `aiohttp.ClientSession` passed to `ClashAPI` and remains
-responsible for closing it.
