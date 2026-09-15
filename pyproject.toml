@@ -26,6 +26,7 @@ test = [
   "pytest-aiohttp>=1.1,<2",
   "pytest-asyncio>=1.2,<2",
   "pytest-socket>=0.7,<1",
+  "PyYAML>=6,<7",
 ]
 
 [project.urls]
@@ -40,3 +41,4 @@ packages = ["src/clash_controller_api"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--disable-socket"
+markers = ["system: starts a real Clash-compatible core"]
