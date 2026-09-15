@@ -24,3 +24,9 @@ Python 3.11 or newer is required.
 python -m pip install -e ".[test]"
 pytest
 ```
+
+Run the pinned real-core contract against all supported cores with:
+
+```bash
+python tests/run.py system
+```
