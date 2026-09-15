@@ -9,8 +9,7 @@ are detected at runtime because support differs between cores.
 ## Status
 
 This package is under development and has not been published to PyPI yet.
-The future distribution name is `clash-controller-api`; the import name is
-`clashapi`.
+The distribution name is `clash-api`; the import name is `clash_api`.
 
 ## Development
 
@@ -23,4 +22,3 @@ pytest
 
 The caller owns the `aiohttp.ClientSession` passed to `ClashAPI` and remains
 responsible for closing it.
-

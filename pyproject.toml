@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "clash-controller-api"
+name = "clash-api"
 version = "0.1.0.dev0"
 description = "Async Python client for Clash-compatible controller APIs"
 readme = "README.md"
@@ -29,15 +29,14 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/myhades/clashapi"
-Issues = "https://github.com/myhades/clashapi/issues"
-Source = "https://github.com/myhades/clashapi"
+Homepage = "https://github.com/myhades/clash-api"
+Issues = "https://github.com/myhades/clash-api/issues"
+Source = "https://github.com/myhades/clash-api"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/clashapi"]
+packages = ["src/clash_api"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "--disable-socket"
-
