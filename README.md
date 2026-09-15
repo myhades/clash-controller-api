@@ -1,4 +1,4 @@
-# Clash API
+# Clash Controller API
 
 Async Python client for Clash-compatible external controller APIs.
 
