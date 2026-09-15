@@ -8,7 +8,7 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from clash_api import (
+from clash_controller_api import (
     APIAuthError,
     APIClientError,
     APIConnectionError,
