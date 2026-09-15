@@ -8,7 +8,11 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
