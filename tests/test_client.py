@@ -204,6 +204,29 @@ async def test_polling_fallback_and_partial_errors(monkeypatch):
     assert Counter(calls) == Counter(["ws", "traffic", "proxies"])
 
 
+async def test_polling_auth_error_does_not_fallback(monkeypatch):
+    api = ClashAPI(
+        "http://localhost/",
+        "",
+        session=AsyncMock(),
+        capabilities={
+            "traffic": True,
+            "http_traffic": True,
+            "ws_traffic": True,
+        },
+    )
+    ws = AsyncMock(side_effect=APIAuthError("invalid token"))
+    http = AsyncMock(return_value={"up": 0, "down": 1})
+    monkeypatch.setattr(api, "async_ws_request", ws)
+    monkeypatch.setattr(api, "async_request", http)
+
+    result = await api.async_fetch_data()
+
+    assert isinstance(result.errors["traffic"], APIAuthError)
+    ws.assert_awaited_once()
+    http.assert_not_awaited()
+
+
 async def test_client_uses_caller_owned_session(aiohttp_server):
     async def handler(request):
         return web.json_response({"ok": True})

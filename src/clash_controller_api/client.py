@@ -603,6 +603,8 @@ class ClashAPI:
                 last_error = APIClientError(
                     f"Empty {transport.upper()} response from {endpoint}"
                 )
+            except APIAuthError:
+                raise
             except ClashAPIError as err:
                 last_error = err
                 _LOGGER.debug(
