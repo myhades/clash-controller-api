@@ -68,6 +68,28 @@ async def test_response_reading(aiohttp_server, body, line, expected):
         assert await api.async_request("GET", "", read_line=line) == expected
 
 
+@pytest.mark.parametrize("suffix", ["", "/"])
+async def test_base_url_preserves_path_prefix(aiohttp_server, suffix):
+    async def handler(request):
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"version": "test"})
+            await ws.close()
+            return ws
+        return web.json_response({"version": "test"})
+
+    app = web.Application()
+    app.router.add_get("/controller/version", handler)
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        api = ClashAPI(str(server.make_url("/controller")) + suffix, "", session=session)
+        await api.async_validate_connection()
+        assert await api.async_request("GET", "/version") == {"version": "test"}
+        assert (await api._probe_http_endpoint("GET", "/version")).supported
+        assert await api.async_ws_request("/version") == {"version": "test"}
+
+
 @pytest.mark.parametrize(
     ("status", "body", "error"),
     [

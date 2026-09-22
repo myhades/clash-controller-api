@@ -45,7 +45,7 @@ class ClashAPI:
         capabilities: Optional[dict[str, bool]] = None,
     ):
         """Initialize the ClashAPI instance."""
-        self.host = host
+        self.host = host.rstrip("/") + "/"
         self.token = token
         self._session = session
         self._available_endpoints: Optional[list[tuple[str, dict[str, Any]]]] = (
@@ -97,7 +97,7 @@ class ClashAPI:
             base = "ws://" + self.host[len("http://") :]
         else:
             base = self.host
-        return f"{base}{endpoint}"
+        return f"{base}{endpoint.lstrip('/')}"
 
     async def _request(
         self,
@@ -126,7 +126,7 @@ class ClashAPI:
         if self._session.closed:
             raise APIClientError("HTTP session is closed")
 
-        url = f"{self.host}{endpoint}"
+        url = f"{self.host}{endpoint.lstrip('/')}"
         _LOGGER.debug("Making %s request to %s, read line: %s.", method, url, read_line)
 
         try:
@@ -218,7 +218,7 @@ class ClashAPI:
             if self._session.closed:
                 raise APIClientError("HTTP session is closed")
 
-            url = f"{self.host}{endpoint}"
+            url = f"{self.host}{endpoint.lstrip('/')}"
             async with self._session.request(
                 method,
                 url,
