@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -140,7 +141,6 @@ class ClashAPI:
             raise APIClientError("HTTP session is closed")
 
         url = f"{self.host}{endpoint.lstrip('/')}"
-        _LOGGER.debug("Making %s request to %s, read line: %s.", method, url, read_line)
 
         try:
             async with self._session.request(
@@ -456,6 +456,16 @@ class ClashAPI:
             for name, outcome in probe_outcomes.items()
             if name in polling_probe_names
         )
+        host_parts = urlsplit(self.host)
+        log_host = urlunsplit(
+            (
+                host_parts.scheme,
+                host_parts.netloc.rsplit("@", 1)[-1],
+                host_parts.path,
+                "",
+                "",
+            )
+        )
         self._capability_outcomes = probe_outcomes
         if (
             previous_capabilities
@@ -463,9 +473,8 @@ class ClashAPI:
             and not any(capabilities.get(key, False) for key in POLLING_CAPABILITY_KEYS)
         ):
             _LOGGER.debug(
-                "Capability probing returned no polling endpoints for %s; "
-                "retaining the previous result",
-                self.host,
+                "No polling endpoints detected for %s; keeping cached capabilities",
+                log_host,
             )
             self._capabilities = previous_capabilities
             self._available_endpoints = previous_endpoints
@@ -486,8 +495,7 @@ class ClashAPI:
             self._available_endpoints.append(("proxies", {}))
 
         supported = ", ".join(name for name, enabled in capabilities.items() if enabled)
-        if supported:
-            _LOGGER.debug("Detected capabilities for %s: %s", self.host, supported)
+        _LOGGER.debug("Capabilities for %s: %s", log_host, supported or "none")
 
         return self._capability_report()
 
@@ -590,7 +598,7 @@ class ClashAPI:
             transports.append(alternate)
 
         last_error: Exception | None = None
-        for transport in transports:
+        for index, transport in enumerate(transports):
             try:
                 if transport == "ws":
                     try:
@@ -622,11 +630,13 @@ class ClashAPI:
                 raise
             except ClashAPIError as err:
                 last_error = err
+            if index + 1 < len(transports):
                 _LOGGER.debug(
-                    "%s transport failed for %s; trying fallback if available: %s",
+                    "%s failed for %s; falling back to %s: %s",
                     transport.upper(),
                     endpoint,
-                    err,
+                    transports[index + 1].upper(),
+                    last_error,
                 )
 
         if last_error is not None:

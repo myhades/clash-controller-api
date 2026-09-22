@@ -1,6 +1,7 @@
 """API contracts using local responses; no external core or internet."""
 
 import asyncio
+import logging
 from collections import Counter
 from unittest.mock import AsyncMock, MagicMock
 
@@ -153,8 +154,11 @@ async def test_transport_errors_and_cancellation(failure, expected, stage):
         await api.async_request("GET", "version")
 
 
-async def test_capability_cache_and_probe_outcomes(monkeypatch):
-    api = ClashAPI("http://localhost/", "", session=AsyncMock(), capabilities={})
+async def test_capability_cache_and_probe_outcomes(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="clash_controller_api.client")
+    api = ClashAPI(
+        "http://user:secret@localhost/", "", session=AsyncMock(), capabilities={}
+    )
     mode = "supported"
     calls = Counter()
 
@@ -162,7 +166,9 @@ async def test_capability_cache_and_probe_outcomes(monkeypatch):
         calls[endpoint] += 1
         if mode == "failed":
             return EndpointCapability(False, error=APIConnectionError("offline"))
-        return EndpointCapability(endpoint in {"proxies", "configs"}, status_code=404)
+        return EndpointCapability(
+            mode != "none" and endpoint in {"proxies", "configs"}, status_code=404
+        )
 
     async def ws(endpoint, **kwargs):
         return EndpointCapability(mode == "supported")
@@ -192,10 +198,17 @@ async def test_capability_cache_and_probe_outcomes(monkeypatch):
     assert not refreshed["traffic"] and refreshed["proxies"]
     assert not refreshed.used_cached
     assert report["traffic"]  # A later probe must not rewrite an earlier report.
+    mode = "none"
+    await api.async_detect_capabilities(force=True)
+    assert "Capabilities for http://localhost/: none" in caplog.text
+    assert "keeping cached capabilities" in caplog.text
+    assert "secret" not in caplog.text
+    assert "user:" not in caplog.text
 
 
 @pytest.mark.parametrize("ws_error", [APITimeoutError("ws"), TimeoutError("ws")])
-async def test_polling_fallback_and_partial_errors(monkeypatch, ws_error):
+async def test_polling_fallback_and_partial_errors(monkeypatch, ws_error, caplog):
+    caplog.set_level(logging.DEBUG, logger="clash_controller_api.client")
     api = ClashAPI(
         "http://localhost/",
         "",
@@ -228,17 +241,25 @@ async def test_polling_fallback_and_partial_errors(monkeypatch, ws_error):
     assert result.data == {"traffic": {"up": 0, "down": 1}}
     assert set(result.errors) == {"proxies"}
     assert Counter(calls) == Counter(["ws", "traffic", "proxies"])
+    assert len(caplog.records) == 1
+    assert "WS failed for traffic; falling back to HTTP:" in caplog.text
     calls.clear()
+    caplog.clear()
     await api.async_fetch_data()
     assert Counter(calls) == Counter(["traffic", "proxies"])
+    assert not caplog.records
     broken = {"http"}
     calls.clear()
     assert "traffic" in (await api.async_fetch_data()).data
     assert Counter(calls) == Counter(["traffic", "ws", "proxies"])
+    assert len(caplog.records) == 1
+    assert "HTTP failed for traffic; falling back to WS:" in caplog.text
     broken = {"http", "ws"}
     calls.clear()
+    caplog.clear()
     assert set((await api.async_fetch_data()).errors) == {"traffic", "proxies"}
     assert Counter(calls) == Counter(["ws", "traffic", "proxies"])
+    assert len(caplog.records) == 1
 
 
 async def test_polling_auth_error_does_not_fallback(monkeypatch):
