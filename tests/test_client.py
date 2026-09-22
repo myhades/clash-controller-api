@@ -150,8 +150,14 @@ async def test_transport_errors_and_cancellation(failure, expected, stage):
         response.json = AsyncMock(side_effect=failure)
         session.request.return_value.__aenter__ = AsyncMock(return_value=response)
     api = ClashAPI("http://localhost/", "", session=session)
-    with pytest.raises(expected):
+    with pytest.raises(expected) as caught:
         await api.async_request("GET", "version")
+    if expected is APITimeoutError:
+        assert str(caught.value) == "HTTP request timed out"
+        assert caught.value.__cause__ is failure
+    elif expected is APIConnectionError:
+        assert str(caught.value) == "HTTP connection failed (ClientConnectionError)"
+        assert caught.value.__cause__ is failure
 
 
 async def test_capability_cache_and_probe_outcomes(monkeypatch, caplog):
