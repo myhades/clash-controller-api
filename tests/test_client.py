@@ -84,7 +84,9 @@ async def test_base_url_preserves_path_prefix(aiohttp_server, suffix):
     app.router.add_get("/controller/version", handler)
     server = await aiohttp_server(app)
     async with aiohttp.ClientSession() as session:
-        api = ClashAPI(str(server.make_url("/controller")) + suffix, "", session=session)
+        api = ClashAPI(
+            str(server.make_url("/controller")) + suffix, "", session=session
+        )
         await api.async_validate_connection()
         assert await api.async_request("GET", "/version") == {"version": "test"}
         assert (await api._probe_http_endpoint("GET", "/version")).supported
