@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import Counter
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -48,17 +48,18 @@ async def test_core_identity(payload, hello, model):
 
 
 @pytest.mark.parametrize(
-    ("body", "line", "expected"),
+    ("body", "line", "expected", "status"),
     [
-        ('{"value": 1}', 0, {"value": 1}),
-        ('{"value": 1}\n{"value": 2}\n', 1, {"value": 1}),
-        ('{"value": 1}\n{"value": 2}\n', 2, {"value": 2}),
+        ('{"value": 1}', 0, {"value": 1}, 200),
+        ('{"value": 1}\n{"value": 2}\n', 1, {"value": 1}, 200),
+        ('{"value": 1}\n{"value": 2}\n', 2, {"value": 2}, 200),
+        ("", 0, {}, 204),
     ],
 )
-async def test_response_reading(aiohttp_server, body, line, expected):
+async def test_response_reading(aiohttp_server, body, line, expected, status):
     async def handler(request):
         assert request.headers["Authorization"] == "Bearer token"
-        return web.Response(text=body, content_type="text/plain")
+        return web.Response(text=body, content_type="text/plain", status=status)
 
     app = web.Application()
     app.router.add_get("/", handler)
@@ -68,6 +69,30 @@ async def test_response_reading(aiohttp_server, body, line, expected):
         assert await api.async_request("GET", "", read_line=line) == expected
 
 
+@pytest.mark.parametrize("suffix", ["", "/"])
+async def test_base_url_preserves_path_prefix(aiohttp_server, suffix):
+    async def handler(request):
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await ws.send_json({"version": "test"})
+            await ws.close()
+            return ws
+        return web.json_response({"version": "test"})
+
+    app = web.Application()
+    app.router.add_get("/controller/version", handler)
+    server = await aiohttp_server(app)
+    async with aiohttp.ClientSession() as session:
+        api = ClashAPI(
+            str(server.make_url("/controller")) + suffix, "", session=session
+        )
+        await api.async_validate_connection()
+        assert await api.async_request("GET", "/version") == {"version": "test"}
+        assert (await api._probe_http_endpoint("GET", "/version")).supported
+        assert await api.async_ws_request("/version") == {"version": "test"}
+
+
 @pytest.mark.parametrize(
     ("status", "body", "error"),
     [
@@ -75,6 +100,11 @@ async def test_response_reading(aiohttp_server, body, line, expected):
         (500, "{}", APIClientError),
         (404, "{}", APIClientError),
         (200, "invalid", APIClientError),
+        (200, "[]", APIClientError),
+        (200, "null", APIClientError),
+        (200, '"text"', APIClientError),
+        (200, "42", APIClientError),
+        (200, "false", APIClientError),
     ],
 )
 async def test_http_errors(aiohttp_server, status, body, error):
@@ -83,11 +113,14 @@ async def test_http_errors(aiohttp_server, status, body, error):
 
     app = web.Application()
     app.router.add_get("/", handler)
+    app.router.add_get("/version", handler)
     server = await aiohttp_server(app)
     async with aiohttp.ClientSession() as session:
         api = ClashAPI(str(server.make_url("/")), "", session=session)
         with pytest.raises(error):
             await api.async_request("GET", "")
+        with pytest.raises(error):
+            await api.async_validate_connection()
         outcome = await api._probe_http_endpoint("GET", "", read_line=1)
         assert not outcome.supported
         if status == 404:
@@ -103,16 +136,19 @@ async def test_http_errors(aiohttp_server, status, body, error):
         (asyncio.TimeoutError(), APITimeoutError),
         (aiohttp.ClientConnectionError(), APIConnectionError),
         (asyncio.CancelledError(), asyncio.CancelledError),
+        (RuntimeError("programming error"), RuntimeError),
     ],
 )
-async def test_transport_errors_and_cancellation(failure, expected):
-    class Session:
-        closed = False
-
-        def request(self, *args, **kwargs):
-            raise failure
-
-    api = ClashAPI("http://localhost/", "", session=Session())
+@pytest.mark.parametrize("stage", ["request", "body"])
+async def test_transport_errors_and_cancellation(failure, expected, stage):
+    session = MagicMock(closed=False)
+    if stage == "request":
+        session.request.side_effect = failure
+    else:
+        response = MagicMock(status=200)
+        response.json = AsyncMock(side_effect=failure)
+        session.request.return_value.__aenter__ = AsyncMock(return_value=response)
+    api = ClashAPI("http://localhost/", "", session=session)
     with pytest.raises(expected):
         await api.async_request("GET", "version")
 
@@ -158,7 +194,8 @@ async def test_capability_cache_and_probe_outcomes(monkeypatch):
     assert report["traffic"]  # A later probe must not rewrite an earlier report.
 
 
-async def test_polling_fallback_and_partial_errors(monkeypatch):
+@pytest.mark.parametrize("ws_error", [APITimeoutError("ws"), TimeoutError("ws")])
+async def test_polling_fallback_and_partial_errors(monkeypatch, ws_error):
     api = ClashAPI(
         "http://localhost/",
         "",
@@ -176,7 +213,7 @@ async def test_polling_fallback_and_partial_errors(monkeypatch):
     async def ws(*args, **kwargs):
         calls.append("ws")
         if "ws" in broken:
-            raise APITimeoutError("ws")
+            raise ws_error
         return {"up": 0, "down": 1}
 
     async def http(method, endpoint, **kwargs):
@@ -204,6 +241,29 @@ async def test_polling_fallback_and_partial_errors(monkeypatch):
     assert Counter(calls) == Counter(["ws", "traffic", "proxies"])
 
 
+async def test_polling_auth_error_does_not_fallback(monkeypatch):
+    api = ClashAPI(
+        "http://localhost/",
+        "",
+        session=AsyncMock(),
+        capabilities={
+            "traffic": True,
+            "http_traffic": True,
+            "ws_traffic": True,
+        },
+    )
+    ws = AsyncMock(side_effect=APIAuthError("invalid token"))
+    http = AsyncMock(return_value={"up": 0, "down": 1})
+    monkeypatch.setattr(api, "async_ws_request", ws)
+    monkeypatch.setattr(api, "async_request", http)
+
+    result = await api.async_fetch_data()
+
+    assert isinstance(result.errors["traffic"], APIAuthError)
+    ws.assert_awaited_once()
+    http.assert_not_awaited()
+
+
 async def test_client_uses_caller_owned_session(aiohttp_server):
     async def handler(request):
         return web.json_response({"ok": True})
@@ -218,7 +278,7 @@ async def test_client_uses_caller_owned_session(aiohttp_server):
     assert shared.closed
 
 
-@pytest.mark.parametrize("mode", ["text", "binary", "timeout", "cancel"])
+@pytest.mark.parametrize("mode", ["text", "binary", "invalid", "timeout", "cancel"])
 async def test_websocket_read_and_cleanup(aiohttp_server, mode):
     closed = asyncio.Event()
     ready = asyncio.Event()
@@ -231,6 +291,8 @@ async def test_websocket_read_and_cleanup(aiohttp_server, mode):
             await ws.send_str('{"up": 1}')
         elif mode == "binary":
             await ws.send_bytes(b'{"up": 1}')
+        elif mode == "invalid":
+            await ws.send_str("[]")
         try:
             async for _ in ws:
                 pass
@@ -249,10 +311,13 @@ async def test_websocket_read_and_cleanup(aiohttp_server, mode):
         await ready.wait()
         if mode == "cancel":
             task.cancel()
-        if mode in {"timeout", "cancel"}:
-            with pytest.raises(
-                APITimeoutError if mode == "timeout" else asyncio.CancelledError
-            ):
+        errors = {
+            "timeout": APITimeoutError,
+            "cancel": asyncio.CancelledError,
+            "invalid": APIClientError,
+        }
+        if mode in errors:
+            with pytest.raises(errors[mode]):
                 await task
         else:
             assert await task == {"up": 1}

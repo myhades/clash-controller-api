@@ -16,6 +16,36 @@ The distribution name is `clash-controller-api`; the import name is
 `clash_controller_api`. The caller owns the `aiohttp.ClientSession` passed to
 `ClashAPI` and remains responsible for closing it.
 
+## Usage
+
+```python
+import asyncio
+
+import aiohttp
+from clash_controller_api import ClashAPI
+
+
+async def main():
+    async with aiohttp.ClientSession() as session:
+        api = ClashAPI("http://localhost:9090", "your-token", session=session)
+        await api.async_validate_connection()
+        result = await api.async_fetch_data()
+        print(result.data)
+        print(result.errors)
+
+
+asyncio.run(main())
+```
+
+`async_fetch_data()` detects and caches endpoint capabilities automatically. Its
+`FetchResult` contains successful responses in `data` and per-endpoint exceptions
+in `errors`. Direct requests raise `APIAuthError`, `APIConnectionError` (including
+`APITimeoutError`), or `APIClientError` for invalid responses. All inherit from
+`ClashAPIError`.
+
+The client does not retry requests. Polling may fall back between supported
+WebSocket and HTTP transports; authentication failures stop that fallback.
+
 ## Development
 
 Python 3.11 or newer is required.

@@ -45,7 +45,7 @@ class ClashAPI:
         capabilities: Optional[dict[str, bool]] = None,
     ):
         """Initialize the ClashAPI instance."""
-        self.host = host
+        self.host = host.rstrip("/") + "/"
         self.token = token
         self._session = session
         self._available_endpoints: Optional[list[tuple[str, dict[str, Any]]]] = (
@@ -97,7 +97,16 @@ class ClashAPI:
             base = "ws://" + self.host[len("http://") :]
         else:
             base = self.host
-        return f"{base}{endpoint}"
+        return f"{base}{endpoint.lstrip('/')}"
+
+    @staticmethod
+    def _response_object(payload: Any) -> dict[str, Any]:
+        """Validate the top-level JSON object expected from controller endpoints."""
+        if not isinstance(payload, dict):
+            raise APIClientError(
+                f"Expected a JSON object, got {type(payload).__name__}"
+            )
+        return payload
 
     async def _request(
         self,
@@ -106,27 +115,31 @@ class ClashAPI:
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
         read_line: int = 0,
-    ) -> Any:
+    ) -> dict[str, Any] | None:
         """General method for making requests."""
 
-        async def handle_response_format(response: aiohttp.ClientResponse) -> Any:
+        async def handle_response_format(
+            response: aiohttp.ClientResponse,
+        ) -> dict[str, Any] | None:
             if response.status == 204:
                 return None
             if read_line < 1:
                 # Some compatible controllers, notably sing-box, return JSON
                 # with a text/plain content type.
-                return await response.json(content_type=None)
+                return self._response_object(await response.json(content_type=None))
             line_counter = 0
             async for line in response.content:
                 line_counter += 1
                 if line_counter == read_line:
-                    return json.loads(line.decode("utf-8").strip())
+                    return self._response_object(
+                        json.loads(line.decode("utf-8").strip())
+                    )
             return None
 
         if self._session.closed:
             raise APIClientError("HTTP session is closed")
 
-        url = f"{self.host}{endpoint}"
+        url = f"{self.host}{endpoint.lstrip('/')}"
         _LOGGER.debug("Making %s request to %s, read line: %s.", method, url, read_line)
 
         try:
@@ -139,14 +152,7 @@ class ClashAPI:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 response.raise_for_status()
-                try:
-                    return await handle_response_format(response)
-                except (json.JSONDecodeError, UnicodeDecodeError) as err:
-                    raise APIClientError(f"Error parsing JSON: {err}") from err
-                except Exception as err:
-                    raise APIClientError(
-                        f"Unexpected error parsing API response: {err}"
-                    ) from err
+                return await handle_response_format(response)
         except aiohttp.ClientResponseError as err:
             if err.status == 401:
                 raise APIAuthError("Invalid API credentials.") from err
@@ -155,7 +161,9 @@ class ClashAPI:
             raise APITimeoutError(f"API request timed out: {err}") from err
         except aiohttp.ClientConnectionError as err:
             raise APIConnectionError(f"API request connection error: {err}") from err
-        except Exception as err:
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise APIClientError(f"Error parsing JSON: {err}") from err
+        except aiohttp.ClientError as err:
             raise APIClientError(f"API request generic failure: {err}") from err
 
     async def async_ws_request(
@@ -182,10 +190,10 @@ class ClashAPI:
             message = await websocket.receive(timeout=timeout)
             if message.type == aiohttp.WSMsgType.TEXT:
                 payload = json.loads(message.data.strip())
-                return payload if isinstance(payload, dict) else {}
+                return self._response_object(payload)
             if message.type == aiohttp.WSMsgType.BINARY:
                 payload = json.loads(message.data.decode("utf-8").strip())
-                return payload if isinstance(payload, dict) else {}
+                return self._response_object(payload)
             raise APIClientError(
                 f"Unexpected websocket message type for {endpoint}: {message.type}"
             )
@@ -223,7 +231,7 @@ class ClashAPI:
             if self._session.closed:
                 raise APIClientError("HTTP session is closed")
 
-            url = f"{self.host}{endpoint}"
+            url = f"{self.host}{endpoint.lstrip('/')}"
             async with self._session.request(
                 method,
                 url,
@@ -238,7 +246,9 @@ class ClashAPI:
                         async for line in response.content:
                             line_counter += 1
                             if line_counter == read_line:
-                                json.loads(line.decode("utf-8").strip())
+                                self._response_object(
+                                    json.loads(line.decode("utf-8").strip())
+                                )
                                 return EndpointCapability(True)
                         return EndpointCapability(False)
                     else:
@@ -502,7 +512,7 @@ class ClashAPI:
     async def async_validate_connection(self) -> None:
         """Check if API connection is successful by reading /version."""
         response = await self._request("GET", "version")
-        if "version" not in response:
+        if response is None or "version" not in response:
             raise APIClientError(
                 "Missing version key in response. Is this endpoint running Clash?"
             )
@@ -583,13 +593,18 @@ class ClashAPI:
         for transport in transports:
             try:
                 if transport == "ws":
-                    response = await asyncio.wait_for(
-                        self.async_ws_request(
-                            ws_endpoint or endpoint,
-                            timeout=3,
-                        ),
-                        timeout=4,
-                    )
+                    try:
+                        response = await asyncio.wait_for(
+                            self.async_ws_request(
+                                ws_endpoint or endpoint,
+                                timeout=3,
+                            ),
+                            timeout=4,
+                        )
+                    except asyncio.TimeoutError as err:
+                        raise APITimeoutError(
+                            f"Websocket request timed out for {endpoint}"
+                        ) from err
                 else:
                     response = await self.async_request(
                         "GET",
@@ -603,6 +618,8 @@ class ClashAPI:
                 last_error = APIClientError(
                     f"Empty {transport.upper()} response from {endpoint}"
                 )
+            except APIAuthError:
+                raise
             except ClashAPIError as err:
                 last_error = err
                 _LOGGER.debug(
