@@ -139,14 +139,7 @@ class ClashAPI:
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 response.raise_for_status()
-                try:
-                    return await handle_response_format(response)
-                except (json.JSONDecodeError, UnicodeDecodeError) as err:
-                    raise APIClientError(f"Error parsing JSON: {err}") from err
-                except Exception as err:
-                    raise APIClientError(
-                        f"Unexpected error parsing API response: {err}"
-                    ) from err
+                return await handle_response_format(response)
         except aiohttp.ClientResponseError as err:
             if err.status == 401:
                 raise APIAuthError("Invalid API credentials.") from err
@@ -155,7 +148,9 @@ class ClashAPI:
             raise APITimeoutError(f"API request timed out: {err}") from err
         except aiohttp.ClientConnectionError as err:
             raise APIConnectionError(f"API request connection error: {err}") from err
-        except Exception as err:
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise APIClientError(f"Error parsing JSON: {err}") from err
+        except aiohttp.ClientError as err:
             raise APIClientError(f"API request generic failure: {err}") from err
 
     async def async_ws_request(
@@ -583,13 +578,18 @@ class ClashAPI:
         for transport in transports:
             try:
                 if transport == "ws":
-                    response = await asyncio.wait_for(
-                        self.async_ws_request(
-                            ws_endpoint or endpoint,
-                            timeout=3,
-                        ),
-                        timeout=4,
-                    )
+                    try:
+                        response = await asyncio.wait_for(
+                            self.async_ws_request(
+                                ws_endpoint or endpoint,
+                                timeout=3,
+                            ),
+                            timeout=4,
+                        )
+                    except asyncio.TimeoutError as err:
+                        raise APITimeoutError(
+                            f"Websocket request timed out for {endpoint}"
+                        ) from err
                 else:
                     response = await self.async_request(
                         "GET",

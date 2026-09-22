@@ -2,7 +2,7 @@
 
 import asyncio
 from collections import Counter
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -103,16 +103,19 @@ async def test_http_errors(aiohttp_server, status, body, error):
         (asyncio.TimeoutError(), APITimeoutError),
         (aiohttp.ClientConnectionError(), APIConnectionError),
         (asyncio.CancelledError(), asyncio.CancelledError),
+        (RuntimeError("programming error"), RuntimeError),
     ],
 )
-async def test_transport_errors_and_cancellation(failure, expected):
-    class Session:
-        closed = False
-
-        def request(self, *args, **kwargs):
-            raise failure
-
-    api = ClashAPI("http://localhost/", "", session=Session())
+@pytest.mark.parametrize("stage", ["request", "body"])
+async def test_transport_errors_and_cancellation(failure, expected, stage):
+    session = MagicMock(closed=False)
+    if stage == "request":
+        session.request.side_effect = failure
+    else:
+        response = MagicMock(status=200)
+        response.json = AsyncMock(side_effect=failure)
+        session.request.return_value.__aenter__ = AsyncMock(return_value=response)
+    api = ClashAPI("http://localhost/", "", session=session)
     with pytest.raises(expected):
         await api.async_request("GET", "version")
 
@@ -158,7 +161,8 @@ async def test_capability_cache_and_probe_outcomes(monkeypatch):
     assert report["traffic"]  # A later probe must not rewrite an earlier report.
 
 
-async def test_polling_fallback_and_partial_errors(monkeypatch):
+@pytest.mark.parametrize("ws_error", [APITimeoutError("ws"), TimeoutError("ws")])
+async def test_polling_fallback_and_partial_errors(monkeypatch, ws_error):
     api = ClashAPI(
         "http://localhost/",
         "",
@@ -176,7 +180,7 @@ async def test_polling_fallback_and_partial_errors(monkeypatch):
     async def ws(*args, **kwargs):
         calls.append("ws")
         if "ws" in broken:
-            raise APITimeoutError("ws")
+            raise ws_error
         return {"up": 0, "down": 1}
 
     async def http(method, endpoint, **kwargs):
