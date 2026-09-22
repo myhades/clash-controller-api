@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -140,7 +141,6 @@ class ClashAPI:
             raise APIClientError("HTTP session is closed")
 
         url = f"{self.host}{endpoint.lstrip('/')}"
-        _LOGGER.debug("Making %s request to %s, read line: %s.", method, url, read_line)
 
         try:
             async with self._session.request(
@@ -155,16 +155,20 @@ class ClashAPI:
                 return await handle_response_format(response)
         except aiohttp.ClientResponseError as err:
             if err.status == 401:
-                raise APIAuthError("Invalid API credentials.") from err
-            raise APIClientError(f"API request got an invalid response: {err}") from err
+                raise APIAuthError("Invalid API credentials") from err
+            raise APIClientError(
+                f"HTTP request failed with status {err.status}"
+            ) from err
         except asyncio.TimeoutError as err:
-            raise APITimeoutError(f"API request timed out: {err}") from err
+            raise APITimeoutError("HTTP request timed out") from err
         except aiohttp.ClientConnectionError as err:
-            raise APIConnectionError(f"API request connection error: {err}") from err
+            raise APIConnectionError(
+                f"HTTP connection failed ({type(err).__name__})"
+            ) from err
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
-            raise APIClientError(f"Error parsing JSON: {err}") from err
+            raise APIClientError("Invalid JSON response") from err
         except aiohttp.ClientError as err:
-            raise APIClientError(f"API request generic failure: {err}") from err
+            raise APIClientError(f"HTTP request failed ({type(err).__name__})") from err
 
     async def async_ws_request(
         self,
@@ -195,24 +199,26 @@ class ClashAPI:
                 payload = json.loads(message.data.decode("utf-8").strip())
                 return self._response_object(payload)
             raise APIClientError(
-                f"Unexpected websocket message type for {endpoint}: {message.type}"
+                f"Unexpected WebSocket message type for {endpoint}: {message.type.name}"
             )
         except aiohttp.ClientResponseError as err:
             if err.status == 401:
-                raise APIAuthError("Invalid API credentials.") from err
+                raise APIAuthError("Invalid API credentials") from err
             raise APIClientError(
-                f"Websocket request got an invalid response: {err}"
+                f"WebSocket request failed with status {err.status}"
             ) from err
         except asyncio.TimeoutError as err:
-            raise APITimeoutError(f"Websocket request timed out: {err}") from err
+            raise APITimeoutError("WebSocket request timed out") from err
         except aiohttp.ClientConnectionError as err:
             raise APIConnectionError(
-                f"Websocket request connection error: {err}"
+                f"WebSocket connection failed ({type(err).__name__})"
             ) from err
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
-            raise APIClientError(f"Error parsing websocket JSON: {err}") from err
+            raise APIClientError("Invalid WebSocket JSON response") from err
         except aiohttp.ClientError as err:
-            raise APIClientError(f"Websocket request failed: {err}") from err
+            raise APIClientError(
+                f"WebSocket request failed ({type(err).__name__})"
+            ) from err
         finally:
             if websocket is not None and not websocket.closed:
                 await websocket.close()
@@ -261,13 +267,13 @@ class ClashAPI:
                 if response.status in {401, 403}:
                     return EndpointCapability(
                         False,
-                        error=APIAuthError("Invalid API credentials."),
+                        error=APIAuthError("Invalid API credentials"),
                         status_code=response.status,
                     )
                 return EndpointCapability(
                     False,
                     error=APIClientError(
-                        f"Capability probe returned HTTP {response.status}"
+                        f"Capability probe failed with status {response.status}"
                     ),
                     status_code=response.status,
                 )
@@ -278,24 +284,34 @@ class ClashAPI:
         except APIClientError as err:
             return EndpointCapability(False, error=err)
         except asyncio.TimeoutError as err:
+            error = APITimeoutError("Capability probe timed out")
+            error.__cause__ = err
             return EndpointCapability(
                 False,
-                error=APITimeoutError(f"Capability probe timed out: {err}"),
+                error=error,
             )
         except aiohttp.ClientConnectionError as err:
+            error = APIConnectionError(
+                f"Capability probe connection failed ({type(err).__name__})"
+            )
+            error.__cause__ = err
             return EndpointCapability(
                 False,
-                error=APIConnectionError(f"Capability probe connection error: {err}"),
+                error=error,
             )
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            error = APIClientError("Invalid capability probe JSON response")
+            error.__cause__ = err
             return EndpointCapability(
                 False,
-                error=APIClientError(f"Invalid capability probe response: {err}"),
+                error=error,
             )
         except aiohttp.ClientError as err:
+            error = APIClientError(f"Capability probe failed ({type(err).__name__})")
+            error.__cause__ = err
             return EndpointCapability(
                 False,
-                error=APIClientError(f"Capability probe failed: {err}"),
+                error=error,
             )
 
     async def _probe_ws_endpoint(
@@ -313,9 +329,11 @@ class ClashAPI:
         except ClashAPIError as err:
             return EndpointCapability(False, error=err)
         except asyncio.TimeoutError as err:
+            error = APITimeoutError("WebSocket capability probe timed out")
+            error.__cause__ = err
             return EndpointCapability(
                 False,
-                error=APITimeoutError(f"Capability probe timed out: {err}"),
+                error=error,
             )
 
     async def async_detect_capabilities(self, force: bool = False) -> CapabilityReport:
@@ -456,6 +474,16 @@ class ClashAPI:
             for name, outcome in probe_outcomes.items()
             if name in polling_probe_names
         )
+        host_parts = urlsplit(self.host)
+        log_host = urlunsplit(
+            (
+                host_parts.scheme,
+                host_parts.netloc.rsplit("@", 1)[-1],
+                host_parts.path,
+                "",
+                "",
+            )
+        )
         self._capability_outcomes = probe_outcomes
         if (
             previous_capabilities
@@ -463,9 +491,8 @@ class ClashAPI:
             and not any(capabilities.get(key, False) for key in POLLING_CAPABILITY_KEYS)
         ):
             _LOGGER.debug(
-                "Capability probing returned no polling endpoints for %s; "
-                "retaining the previous result",
-                self.host,
+                "No polling endpoints detected for %s; keeping cached capabilities",
+                log_host,
             )
             self._capabilities = previous_capabilities
             self._available_endpoints = previous_endpoints
@@ -486,8 +513,7 @@ class ClashAPI:
             self._available_endpoints.append(("proxies", {}))
 
         supported = ", ".join(name for name, enabled in capabilities.items() if enabled)
-        if supported:
-            _LOGGER.debug("Detected capabilities for %s: %s", self.host, supported)
+        _LOGGER.debug("Capabilities for %s: %s", log_host, supported or "none")
 
         return self._capability_report()
 
@@ -513,9 +539,7 @@ class ClashAPI:
         """Check if API connection is successful by reading /version."""
         response = await self._request("GET", "version")
         if response is None or "version" not in response:
-            raise APIClientError(
-                "Missing version key in response. Is this endpoint running Clash?"
-            )
+            raise APIClientError("Missing version in controller response")
         self._version_response = dict(response)
 
     @staticmethod
@@ -590,7 +614,7 @@ class ClashAPI:
             transports.append(alternate)
 
         last_error: Exception | None = None
-        for transport in transports:
+        for index, transport in enumerate(transports):
             try:
                 if transport == "ws":
                     try:
@@ -603,7 +627,7 @@ class ClashAPI:
                         )
                     except asyncio.TimeoutError as err:
                         raise APITimeoutError(
-                            f"Websocket request timed out for {endpoint}"
+                            f"WebSocket request timed out for {endpoint}"
                         ) from err
                 else:
                     response = await self.async_request(
@@ -622,11 +646,13 @@ class ClashAPI:
                 raise
             except ClashAPIError as err:
                 last_error = err
+            if index + 1 < len(transports):
                 _LOGGER.debug(
-                    "%s transport failed for %s; trying fallback if available: %s",
+                    "%s failed for %s; falling back to %s: %s",
                     transport.upper(),
                     endpoint,
-                    err,
+                    transports[index + 1].upper(),
+                    last_error,
                 )
 
         if last_error is not None:
