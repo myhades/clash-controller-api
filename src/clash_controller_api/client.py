@@ -99,6 +99,15 @@ class ClashAPI:
             base = self.host
         return f"{base}{endpoint.lstrip('/')}"
 
+    @staticmethod
+    def _response_object(payload: Any) -> dict[str, Any]:
+        """Validate the top-level JSON object expected from controller endpoints."""
+        if not isinstance(payload, dict):
+            raise APIClientError(
+                f"Expected a JSON object, got {type(payload).__name__}"
+            )
+        return payload
+
     async def _request(
         self,
         method: str,
@@ -106,21 +115,25 @@ class ClashAPI:
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
         read_line: int = 0,
-    ) -> Any:
+    ) -> dict[str, Any] | None:
         """General method for making requests."""
 
-        async def handle_response_format(response: aiohttp.ClientResponse) -> Any:
+        async def handle_response_format(
+            response: aiohttp.ClientResponse,
+        ) -> dict[str, Any] | None:
             if response.status == 204:
                 return None
             if read_line < 1:
                 # Some compatible controllers, notably sing-box, return JSON
                 # with a text/plain content type.
-                return await response.json(content_type=None)
+                return self._response_object(await response.json(content_type=None))
             line_counter = 0
             async for line in response.content:
                 line_counter += 1
                 if line_counter == read_line:
-                    return json.loads(line.decode("utf-8").strip())
+                    return self._response_object(
+                        json.loads(line.decode("utf-8").strip())
+                    )
             return None
 
         if self._session.closed:
@@ -177,10 +190,10 @@ class ClashAPI:
             message = await websocket.receive(timeout=timeout)
             if message.type == aiohttp.WSMsgType.TEXT:
                 payload = json.loads(message.data.strip())
-                return payload if isinstance(payload, dict) else {}
+                return self._response_object(payload)
             if message.type == aiohttp.WSMsgType.BINARY:
                 payload = json.loads(message.data.decode("utf-8").strip())
-                return payload if isinstance(payload, dict) else {}
+                return self._response_object(payload)
             raise APIClientError(
                 f"Unexpected websocket message type for {endpoint}: {message.type}"
             )
@@ -233,7 +246,9 @@ class ClashAPI:
                         async for line in response.content:
                             line_counter += 1
                             if line_counter == read_line:
-                                json.loads(line.decode("utf-8").strip())
+                                self._response_object(
+                                    json.loads(line.decode("utf-8").strip())
+                                )
                                 return EndpointCapability(True)
                         return EndpointCapability(False)
                     else:
@@ -497,7 +512,7 @@ class ClashAPI:
     async def async_validate_connection(self) -> None:
         """Check if API connection is successful by reading /version."""
         response = await self._request("GET", "version")
-        if "version" not in response:
+        if response is None or "version" not in response:
             raise APIClientError(
                 "Missing version key in response. Is this endpoint running Clash?"
             )

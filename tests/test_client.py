@@ -48,17 +48,18 @@ async def test_core_identity(payload, hello, model):
 
 
 @pytest.mark.parametrize(
-    ("body", "line", "expected"),
+    ("body", "line", "expected", "status"),
     [
-        ('{"value": 1}', 0, {"value": 1}),
-        ('{"value": 1}\n{"value": 2}\n', 1, {"value": 1}),
-        ('{"value": 1}\n{"value": 2}\n', 2, {"value": 2}),
+        ('{"value": 1}', 0, {"value": 1}, 200),
+        ('{"value": 1}\n{"value": 2}\n', 1, {"value": 1}, 200),
+        ('{"value": 1}\n{"value": 2}\n', 2, {"value": 2}, 200),
+        ("", 0, {}, 204),
     ],
 )
-async def test_response_reading(aiohttp_server, body, line, expected):
+async def test_response_reading(aiohttp_server, body, line, expected, status):
     async def handler(request):
         assert request.headers["Authorization"] == "Bearer token"
-        return web.Response(text=body, content_type="text/plain")
+        return web.Response(text=body, content_type="text/plain", status=status)
 
     app = web.Application()
     app.router.add_get("/", handler)
@@ -97,6 +98,11 @@ async def test_base_url_preserves_path_prefix(aiohttp_server, suffix):
         (500, "{}", APIClientError),
         (404, "{}", APIClientError),
         (200, "invalid", APIClientError),
+        (200, "[]", APIClientError),
+        (200, "null", APIClientError),
+        (200, '"text"', APIClientError),
+        (200, "42", APIClientError),
+        (200, "false", APIClientError),
     ],
 )
 async def test_http_errors(aiohttp_server, status, body, error):
@@ -105,11 +111,14 @@ async def test_http_errors(aiohttp_server, status, body, error):
 
     app = web.Application()
     app.router.add_get("/", handler)
+    app.router.add_get("/version", handler)
     server = await aiohttp_server(app)
     async with aiohttp.ClientSession() as session:
         api = ClashAPI(str(server.make_url("/")), "", session=session)
         with pytest.raises(error):
             await api.async_request("GET", "")
+        with pytest.raises(error):
+            await api.async_validate_connection()
         outcome = await api._probe_http_endpoint("GET", "", read_line=1)
         assert not outcome.supported
         if status == 404:
@@ -267,7 +276,7 @@ async def test_client_uses_caller_owned_session(aiohttp_server):
     assert shared.closed
 
 
-@pytest.mark.parametrize("mode", ["text", "binary", "timeout", "cancel"])
+@pytest.mark.parametrize("mode", ["text", "binary", "invalid", "timeout", "cancel"])
 async def test_websocket_read_and_cleanup(aiohttp_server, mode):
     closed = asyncio.Event()
     ready = asyncio.Event()
@@ -280,6 +289,8 @@ async def test_websocket_read_and_cleanup(aiohttp_server, mode):
             await ws.send_str('{"up": 1}')
         elif mode == "binary":
             await ws.send_bytes(b'{"up": 1}')
+        elif mode == "invalid":
+            await ws.send_str("[]")
         try:
             async for _ in ws:
                 pass
@@ -298,10 +309,13 @@ async def test_websocket_read_and_cleanup(aiohttp_server, mode):
         await ready.wait()
         if mode == "cancel":
             task.cancel()
-        if mode in {"timeout", "cancel"}:
-            with pytest.raises(
-                APITimeoutError if mode == "timeout" else asyncio.CancelledError
-            ):
+        errors = {
+            "timeout": APITimeoutError,
+            "cancel": asyncio.CancelledError,
+            "invalid": APIClientError,
+        }
+        if mode in errors:
+            with pytest.raises(errors[mode]):
                 await task
         else:
             assert await task == {"up": 1}
