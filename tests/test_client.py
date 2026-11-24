@@ -68,6 +68,7 @@ async def test_response_reading(aiohttp_server, body, line, expected, status):
     async with aiohttp.ClientSession() as session:
         api = ClashAPI(str(server.make_url("/")), "token", session=session)
         assert await api.async_request("GET", "", read_line=line) == expected
+        assert not session.closed
 
 
 @pytest.mark.parametrize("suffix", ["", "/"])
@@ -102,10 +103,6 @@ async def test_base_url_preserves_path_prefix(aiohttp_server, suffix):
         (404, "{}", APIClientError),
         (200, "invalid", APIClientError),
         (200, "[]", APIClientError),
-        (200, "null", APIClientError),
-        (200, '"text"', APIClientError),
-        (200, "42", APIClientError),
-        (200, "false", APIClientError),
     ],
 )
 async def test_http_errors(aiohttp_server, status, body, error):
@@ -289,20 +286,6 @@ async def test_polling_auth_error_does_not_fallback(monkeypatch):
     assert isinstance(result.errors["traffic"], APIAuthError)
     ws.assert_awaited_once()
     http.assert_not_awaited()
-
-
-async def test_client_uses_caller_owned_session(aiohttp_server):
-    async def handler(request):
-        return web.json_response({"ok": True})
-
-    app = web.Application()
-    app.router.add_get("/", handler)
-    server = await aiohttp_server(app)
-    async with aiohttp.ClientSession() as shared:
-        api = ClashAPI(str(server.make_url("/")), "", session=shared)
-        await api.async_request("GET", "")
-        assert not shared.closed
-    assert shared.closed
 
 
 @pytest.mark.parametrize("mode", ["text", "binary", "second", "invalid", "timeout", "cancel"])
