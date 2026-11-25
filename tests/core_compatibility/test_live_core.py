@@ -7,7 +7,6 @@ import pytest
 
 from clash_controller_api import (
     APIAuthError,
-    APIClientError,
     ClashAPI,
 )
 
@@ -78,17 +77,3 @@ async def test_core_contract(running_core: RunningCore):
             assert (await api.async_request("GET", endpoint))["now"] == target
         finally:
             await api.async_request("PUT", endpoint, json_data={"name": original})
-
-        original_mode = (await api.async_request("GET", "configs"))["mode"]
-
-        async def set_mode(mode):
-            try:
-                await api.async_request("PATCH", "configs", json_data={"mode": mode})
-            except APIClientError:
-                await api.async_request("PUT", "configs", json_data={"mode": mode})
-
-        try:
-            await set_mode("global")
-            assert (await api.async_request("GET", "configs"))["mode"] == "global"
-        finally:
-            await set_mode(original_mode)

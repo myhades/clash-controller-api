@@ -174,8 +174,12 @@ class ClashAPI:
         self,
         endpoint: str,
         timeout: int = 3,
+        *,
+        read_line: int = 1,
     ) -> dict[str, Any]:
-        """Read one JSON message from websocket endpoint."""
+        """Read the selected JSON sample from a websocket endpoint."""
+        if read_line < 1:
+            raise ValueError("read_line must be at least 1")
         if self._session.closed:
             raise APIClientError("HTTP session is closed")
 
@@ -191,16 +195,19 @@ class ClashAPI:
                 headers=self._ws_headers(),
                 timeout=ws_timeout,
             )
-            message = await websocket.receive(timeout=timeout)
-            if message.type == aiohttp.WSMsgType.TEXT:
-                payload = json.loads(message.data.strip())
-                return self._response_object(payload)
-            if message.type == aiohttp.WSMsgType.BINARY:
-                payload = json.loads(message.data.decode("utf-8").strip())
-                return self._response_object(payload)
-            raise APIClientError(
-                f"Unexpected WebSocket message type for {endpoint}: {message.type.name}"
-            )
+            async with asyncio.timeout(timeout):
+                for _ in range(read_line):
+                    message = await websocket.receive(timeout=timeout)
+                    if message.type == aiohttp.WSMsgType.TEXT:
+                        payload = json.loads(message.data.strip())
+                    elif message.type == aiohttp.WSMsgType.BINARY:
+                        payload = json.loads(message.data.decode("utf-8").strip())
+                    else:
+                        raise APIClientError(
+                            f"Unexpected WebSocket message type for {endpoint}: {message.type.name}"
+                        )
+                    result = self._response_object(payload)
+                return result
         except aiohttp.ClientResponseError as err:
             if err.status == 401:
                 raise APIAuthError("Invalid API credentials") from err
@@ -622,6 +629,7 @@ class ClashAPI:
                             self.async_ws_request(
                                 ws_endpoint or endpoint,
                                 timeout=3,
+                                read_line=read_line if key == "memory" else 1,
                             ),
                             timeout=4,
                         )
